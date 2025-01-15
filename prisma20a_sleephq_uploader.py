@@ -4,10 +4,18 @@ Script used to uploading Lowenstein Prisma device data to SleepHQ via API
 
 
 Version History:
+    Version 1.0.2: 14-Jan-2025
+    Author: Mike Stone
+    Changes:
+       - fixed issue with message notifications
+       - added local logging, 1MB with a rotation of 3 logs
+       - added during first setup to enable ntfy notifications
+
     Version 1.0.1: 14-Jan-2025
     Authoer Mike Stone
     Changes:
-        - added support for ntfy notifcaitons.
+        - added support for ntfy notifcaitons. Please refer to:
+            https://docs.ntfy.sh for more information
         - requires 3 new variables in the .env file:
           NTFY_ENABLE='NO'
           NTFY_TOKEN='<place holder, authentication not implemented yet>'
@@ -43,22 +51,38 @@ Requirements:
 class NTFY:
     """
      Encapsulataed everything needed to utilize ntfy notifications
+     Also includes the ability to write to the screen and a log file
+     This keeps all messaging to a single object rather than passing
+     multiple paramters to all function definitions
     """
-    def __init__(self, enabled, token, topic):
+    def __init__(self, enabled, token, topic, logger):
         """
         Construct a new ntfy object.
 
-        :param short_name: The filename of a file to upload
-        :param long_name : The full path and filename of a file to upload
-        :param file_hash : The MD5 filehash conforming to the API requirement of the file+filename.
-                          Please refer to the /v1/imports/files/calculate_content_hash information at
-                          https://sleephq.com/api-docs/index.html
+        :param enabled : Should alerts go out via ntft?  Valid values are YES to enable, anything else
+                         do disable it
+        :param token   : ntfy token for protected topics
+        :param topic   : topic to post messages to
         """
         self.enabled = enabled
         self.token = token
         self.topic = topic
+        self.logger = logger
 
-    def send_success(message):
+    def display_message(self, message):
+        """
+        Display a message to the screen and log it to the logfile
+        """
+        self.logger.info(message)
+        print(message)
+        return
+
+    def send_success(self, message):
+        """
+        Send a success message via the ntfy service
+
+        :param message : The message to send 
+        """
         if self.enabled == "YES":
             ntfy_url = "https://ntfy.sh/" + self.topic
             requests.post(ntfy_url,
@@ -67,9 +91,14 @@ class NTFY:
                           "Priority": "default",
                           "Tags": "white_check_mark"})
 
-    def send_failure(message):
+    def send_failure(self, message):
+        """
+        Send a failure message via the ntfy service
+
+        :param message : The message to send 
+        """
         if self.enabled == "YES":
-            ntty_url = "https://ntfy.sh/" + self.topic
+            ntfy_url = "https://ntfy.sh/" + self.topic
             requests.post(ntfy_url,
                 data=message,
                 headers={ "Title": "Failure",
@@ -110,20 +139,22 @@ def display_failure_and_exit(message, msg_ntfy):
     Any hooks into additional notifications can be added here
 
     :param message: The message to display
+    :param my_ntfy : the ntfy object for sending notifications
 
     Return value: None
     """
-    print(message)
+    ntfy.display_message( message)
     msg_ntfy.send_failure(message)
     sys.exit(1)
 
 
-def get_access_token(client_id, client_secret, my_ntty):
+def get_access_token(client_id, client_secret, my_ntfy):
     """
     Function to obtain an API access token for querying and uploading a user's SleepHQ account
 
     :param client_id     : The client UUID generated when adding an API key
     :param client_secret : The client secret generated when adding an API key
+    :param my_ntfy : the ntfy object for sending notifications
 
     Return value: an API token if the API call is successful; otherwise terminate the script
     """
@@ -137,7 +168,7 @@ def get_access_token(client_id, client_secret, my_ntty):
     try:
         response = requests.post(url, data=payload)
         response.raise_for_status()
-        print("\tAuthorization successful")
+        ntfy.display_message("\tAuthorization successful")
         return 'Bearer ' + response.json()['access_token']
     except requests.RequestException as e:
         display_failure_and_exit(f"\tFailed to get access token: {e}", my_ntfy)
@@ -169,6 +200,7 @@ def get_team_id(headers, my_ntfy):
     Retrieve the Team ID based upon your Client ID
 
     :param headers : JSON headers for the request
+    :param my_ntfy : the ntfy object for sending notifications
 
     Return value: A team ID
     """
@@ -213,6 +245,7 @@ def reserve_import_id(team_id, headers, my_ntfy):
 
     :param team_id   : your team ID
     :param headers : JSON headers for the request
+    :param my_ntfy : the ntfy object for sending notifications
 
     Return value: The import ID to be used with the current data upload
     """
@@ -232,6 +265,7 @@ def get_machine_id(team_id, headers, serial_number, my_ntfy):
     :param team_id      : your team ID
     :param headers : JSON headers for the request
     :param serial_number : The Serial Number of the Machine to upload data against
+    :param my_ntfy : the ntfy object for sending notifications
 
     Return value : The machine_id that matches the serial number provided
     """
@@ -244,7 +278,7 @@ def get_machine_id(team_id, headers, serial_number, my_ntfy):
         machines = response.json()['data']
         for index, machine in enumerate(machines):
             if serial_number == "GETLIST":
-                print(f"Found:{machine['attributes']['brand']}, " + 
+                ntfy.display_message(f"Found:{machine['attributes']['brand']}, " + 
                       f"{machine['attributes']['model']}, " +
                       f"Serial Number: {machine['attributes']['serial_number']}")
             else:
@@ -253,7 +287,7 @@ def get_machine_id(team_id, headers, serial_number, my_ntfy):
                                 f"{machine['attributes']['model']}, " +
                                 f"Serial Number: {machine['attributes']['serial_number']}\n")
                 if shq_machine_serial == serial_number or serial_number == "ANY":
-                    print(f"Found machine ID {machine['id']}")
+                    ntfy.display_message(f"Found machine ID {machine['id']}")
                     return (machine['id'])
         if serial_number == "GETLIST":
             return()
@@ -271,6 +305,7 @@ def upload_files(import_id, headers, file_detail_list, my_ntfy):
     :param import_id  : The import identifier previously obtained
     :param headers : JSON headers for the request
     :param file_details_list : List of FileDetail objects to import
+    :param my_ntfy : the ntfy object for sending notifications
 
     Return value: None
     """
@@ -287,7 +322,7 @@ def upload_files(import_id, headers, file_detail_list, my_ntfy):
             try:
                 response = requests.post(url, headers=headers, files=files)
                 response.raise_for_status()
-                print(f"\tFile {item.ShortName} has been imported")
+                ntfy.display_message(f"\tFile {item.ShortName} has been imported")
             except requests.RequestException as e:
                 display_failure_and_exit(f"\tFailed to upload file {item.ShortName}: {e}", my_ntfy)
             time.sleep(1.5)
@@ -300,6 +335,7 @@ def process_imported_files(import_id, headers, my_ntfy):
 
     :param import_id : The import ID used to upload files
     :param headers : JSON headers for the request
+    :param my_ntfy : the ntfy object for sending notifications
 
     Return values: None
     """
@@ -307,7 +343,7 @@ def process_imported_files(import_id, headers, my_ntfy):
     try:
         response = requests.post(url, headers=headers)
         response.raise_for_status()
-        print(f"\tFiles are now being processed in SleepHQ for Import ID: {import_id}")
+        ntfy.display_message(f"\tFiles are now being processed in SleepHQ for Import ID: {import_id}")
     except requests.RequestException as e:
         display_failure_and_exit(f"\tFailed to process imported files: {e}" +
                                  f"But you can try the Process Import request again later by calling: {url}", my_ntfy)
@@ -319,6 +355,7 @@ def check_imported_files(import_id, headers, my_ntfy):
 
     :param: import_id : The import_id to check
     :param headers : JSON headers for the request
+    :param my_ntfy : the ntfy object for sending notifications
 
     Return value: None
     """
@@ -330,7 +367,7 @@ def check_imported_files(import_id, headers, my_ntfy):
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             status_msg = response.json()['data']
-            print(f"\timport status:{status_msg['attributes']['status']}; Failure Reason: " +
+            ntfy.display_message(f"\timport status:{status_msg['attributes']['status']}; Failure Reason: " +
                   f"{status_msg['attributes']['failed_reason']}")
             r_result = status_msg['attributes']['status']
             f_result = status_msg['attributes']['failed_reason']
@@ -343,6 +380,19 @@ def check_imported_files(import_id, headers, my_ntfy):
         display_failure_and_exit(f"\tFailed to process imported files.  Result is {r_result}. Failure code is {f_result}", my_ntfy)
     else:
         my_ntfy.send_success("Data import into SleepIQ was successful")
+    return
+
+def display_message(logme, message):
+    """
+    Display a message to both the screen and the log file
+
+    :param logme   : a logger instance
+    :param message : the message to display/log
+    """
+    logme.info(message)
+    print(message)
+    return
+
 
 ##################
 # Module imports #
@@ -355,6 +405,8 @@ import time  # used for sleeping
 from pathlib import Path
 import json
 import hashlib
+import logging
+from logging.handlers import RotatingFileHandler
 
 # Modules not installed by debault on python3
 requests_spec = importlib.util.find_spec("requests")
@@ -370,8 +422,18 @@ if dotenv_spec is None:
 else:
     from dotenv import load_dotenv, find_dotenv, set_key  # For loading environment variables
 
-
 if __name__ == '__main__':
+    # define a rotating log file
+    logging.basicConfig(
+        handlers=[RotatingFileHandler('./prisma-api.log', maxBytes=100000, backupCount=3)],
+        level=logging.DEBUG,
+        format="[%(asctime)s] %(message)s",
+        datefmt='%Y-%m-%dT%H:%M:%S')
+
+    # create a dummy entry for logging purposes
+    # this can't send out any notifications at this time
+    ntfy = NTFY("NO", None, None, logging)
+
     # Load environment values
     my_client_id = ""
     my_client_secret = ""
@@ -380,22 +442,22 @@ if __name__ == '__main__':
     env_file_path = Path(os.getcwd()+ "/.env")
     env_path = find_dotenv()
     if not env_path:
-        print(".env file does not exist, let's create it..")
+        ntfy.display_message(".env file does not exist, let's create it..")
         my_client_id = input("Please enter your SleepHQ Client ID > ")
         my_client_secret = input("Please enter your SleepHQ Client Secret > ")
         my_dir_path = input("Please enter the path to the config.pcfg and therapy.pdat files > ")
         print("Trying to get list of device(s) from SleepHQ.")
         # Connect to SleepHQ and try to authenticate
-        my_auth_token = get_access_token(my_client_id, my_client_secret)
+        my_auth_token = get_access_token(my_client_id, my_client_secret, ntfy)
         # Create header used for most API calls
         my_header = {
             'Authorization': my_auth_token,
             'Accept': 'application/json'
         }
         # Get the current team ID associated with the client id
-        my_team_id = get_team_id(my_header)
+        my_team_id = get_team_id(my_header, ntfy)
         # get the correct machine id to attach the data uplaod to
-        machine_id = get_machine_id(my_team_id, my_header, "GETLIST")
+        machine_id = get_machine_id(my_team_id, my_header, "GETLIST", ntfy)
         my_device_serial = input("Please enter or copy/paste the device serial number > ")
         # create .env file in the current working folder
         env_file_path.touch(mode=0o600, exist_ok=False)
@@ -403,7 +465,7 @@ if __name__ == '__main__':
         set_key(dotenv_path=env_file_path, key_to_set="CLIENT_SECRET", value_to_set=my_client_secret)
         set_key(dotenv_path=env_file_path, key_to_set="SERIAL", value_to_set=my_device_serial)
         set_key(dotenv_path=env_file_path, key_to_set="DIR_PATH", value_to_set=my_dir_path)
-        print(".env has been created, proceeding with uploading data")
+        ntfy.display_message(".env has been created, proceeding with uploading data")
     load_dotenv()
     my_client_id = os.getenv('CLIENT_ID')
     my_client_secret = os.getenv('CLIENT_SECRET')
@@ -414,62 +476,62 @@ if __name__ == '__main__':
     ntfy_token = os.getenv('NTFY_TOKEN')
     ## Add in ntfy entries if they don't exist
     if ntfy_enable == None:
-        set_key(dotenv_path=env_file_path, key_to_set="NTFY_ENABLE", value_to_set='NO')
-        set_key(dotenv_path=env_file_path, key_to_set="NTFY_TOKEN", value_to_set='<token>')
-        set_key(dotenv_path=env_file_path, key_to_set="NTFY_TOPIC", value_to_set='<topic>')
+        ntfy.display_message(".env does not contain entries for ntfy... creating")
+        my_ntfy_enable = input("Enable ntfy push notifications? (YES/NO) > ")
+        my_ntfy_token = input("Enter in your ntfy token (currently not used) > ")
+        my_ntfy_topic = input("Enter in your ntfy topic name > ")
+        set_key(dotenv_path=env_file_path, key_to_set="NTFY_ENABLE", value_to_set=my_ntfy_enable)
+        set_key(dotenv_path=env_file_path, key_to_set="NTFY_TOKEN", value_to_set=my_ntfy_token)
+        set_key(dotenv_path=env_file_path, key_to_set="NTFY_TOPIC", value_to_set=my_ntfy_topic)
         load_dotenv() # reload environment variables
-    ntfy = NTFY(ntfy_enable, ntfy_token, ntfy_topic)
-
-    ntfy.send_success("Data import into SleepIQ was successful")
-    display_failure_and_exit("done")
+    ntfy = NTFY(ntfy_enable, ntfy_token, ntfy_topic, logging)
 
     # Collect information on the config.pcfg and therapy.pdat files
     # Those two files should be the only files in the folder
     # specified by my_dir_path
-    print("Step 1: Gather files for uploading and comput MD5 hash.")
+    ntfy.display_message("Step 1: Gather files for uploading and comput MD5 hash.")
     my_file_details_list = collect_files(my_dir_path)
     if len(my_file_details_list) == 0:
         display_failure_and_exit(f"\tNo files found at path {my_dir_path} to import to SleepHQ." +
                                   "Check your folder path and update the .env file if needed.", ntfy)
     # Print out result file list
-    for fname in my_file_details_list:  print(f"\tProcessed: {fname.LongName} hash: {fname.FileHash}")
-
-    print("Completed Step 1")
+    for fname in my_file_details_list:  ntfy.display_message(f"\tProcessed: {fname.LongName} hash: {fname.FileHash}")
+    ntfy.display_message("Completed Step 1")
     # Get the API authorization token
-    print("Starting Step 2: Obtain Access Token")
+    ntfy.display_message("Starting Step 2: Obtain Access Token")
     my_auth_token = get_access_token(my_client_id, my_client_secret, ntfy)
     # Create header used for most API calls
     my_header = {
         'Authorization': my_auth_token,
         'Accept': 'application/json'
     }
-    print("Completed Step 2")
+    ntfy.display_message("Completed Step 2")
     # Get the current team ID associated with the client id
-    print("Starting Step 3: retrieve my team id")
+    ntfy.display_message("Starting Step 3: retrieve my team id")
     my_team_id = get_team_id(my_header, ntfy)
-    print(f"\tTeam Id retrieved successfully: {my_team_id}")
-    print("Compelted Step 3")
+    ntfy.display_message(f"\tTeam Id retrieved successfully: {my_team_id}")
+    ntfy.display_message("Compelted Step 3")
     # get the correct machine id to attach the data uplaod to
     machine_id = get_machine_id(my_team_id, my_header, my_device_serial, ntfy)
-    print("Starting Step 4: Obtaining machine ID")
-    print(f"\tMachine ID retrieved successfully: {machine_id}")
-    print("Completed Step 4")
+    ntfy.display_message("Starting Step 4: Obtaining machine ID")
+    ntfy.display_message(f"\tMachine ID retrieved successfully: {machine_id}")
+    ntfy.display_message("Completed Step 4")
     # get an import ID reservation
-    print("Starting Step 5: Obtain an Import ID")
+    ntfy.display_message("Starting Step 5: Obtain an Import ID")
     my_import_id = reserve_import_id(my_team_id, my_header, ntfy)
-    print(f"\tImport Id reserved successfully: {my_import_id}")
-    print("Completed Step 5")
+    ntfy.display_message(f"\tImport Id reserved successfully: {my_import_id}")
+    ntfy.display_message("Completed Step 5")
     # upload files to SleepHQ API
-    print("Starting Step 6: Uploading files")
+    ntfy.display_message("Starting Step 6: Uploading files")
     upload_files(my_import_id, my_header, my_file_details_list, ntfy)
-    print("Completed Step 6")
+    ntfy.display_message("Completed Step 6")
     # tell SleepHQ to process the files
-    print("Starting Step 7: Processing Files")
+    ntfy.display_message("Starting Step 7: Processing Files")
     process_imported_files(my_import_id, my_header, ntfy)
-    print("Completed Step 7")
+    ntfy.display_message("Completed Step 7")
     time.sleep(10)
 
     # check the status for the file processing
-    print("Starting Step 8: Check processing status")
+    ntfy.display_message("Starting Step 8: Check processing status")
     check_imported_files(my_import_id, my_header,ntfy)
-    print("Completed Step 8.\nData Import Process is complete.")
+    ntfy.display_message("Completed Step 8.\nData Import Process is complete.")
