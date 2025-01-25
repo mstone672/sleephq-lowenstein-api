@@ -4,6 +4,12 @@ Script used to uploading Lowenstein Prisma device data to SleepHQ via API
 
 
 Version History:
+    Verison 1.0.3: 22-Jan-2025
+    Author: Mike Stone
+    Changes:
+       - Added TEAM_ID variable to the .env file
+       - Added obtaining the team id as part of the initial run/configuration
+
     Version 1.0.2: 14-Jan-2025
     Author: Mike Stone
     Changes:
@@ -202,13 +208,17 @@ def get_team_id(headers, my_ntfy):
     :param headers : JSON headers for the request
     :param my_ntfy : the ntfy object for sending notifications
 
-    Return value: A team ID
+    Return value:  None
     """
-    url = "https://sleephq.com/api/v1/me"
+    url = "https://sleephq.com/api/v1/teams"
     try:
         response = requests.request("GET", url, headers=headers)
         response.raise_for_status()
-        return response.json()['data']['current_team_id']
+
+        for index, team in enumerate(teams):
+            ntfy.display_message(f"Found:id {team['id']}, " + 
+                                 f"Name: {team['attributes']['name']}, ")
+        return()
     except requests.RequestException as e:
         display_failure_and_exit(f"\tFailed to get Team Id: {e}", my_ntfy)
 
@@ -364,6 +374,7 @@ def check_imported_files(import_id, headers, my_ntfy):
     f_result = ""
     try:
         while (not r_result == "complete"):
+            time.sleep(15)
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             status_msg = response.json()['data']
@@ -371,7 +382,6 @@ def check_imported_files(import_id, headers, my_ntfy):
                   f"{status_msg['attributes']['failed_reason']}")
             r_result = status_msg['attributes']['status']
             f_result = status_msg['attributes']['failed_reason']
-            time.sleep(15)
     except requests.RequestException as e:
         display_failure_and_exit(f"\tFailed to process imported files: {e}" +
                                  f"But you can try the Process Import request again later by calling: {url}". my_ntfy)
@@ -446,16 +456,18 @@ if __name__ == '__main__':
         my_client_id = input("Please enter your SleepHQ Client ID > ")
         my_client_secret = input("Please enter your SleepHQ Client Secret > ")
         my_dir_path = input("Please enter the path to the config.pcfg and therapy.pdat files > ")
-        print("Trying to get list of device(s) from SleepHQ.")
+        # Create header used for most API calls
         # Connect to SleepHQ and try to authenticate
         my_auth_token = get_access_token(my_client_id, my_client_secret, ntfy)
-        # Create header used for most API calls
         my_header = {
             'Authorization': my_auth_token,
             'Accept': 'application/json'
         }
+
         # Get the current team ID associated with the client id
-        my_team_id = get_team_id(my_header, ntfy)
+        get_team_id(my_header, ntfy)
+        my_team_id = input("Please enter the team ID to use > ")
+        print("Trying to get list of device(s) from SleepHQ.")
         # get the correct machine id to attach the data uplaod to
         machine_id = get_machine_id(my_team_id, my_header, "GETLIST", ntfy)
         my_device_serial = input("Please enter or copy/paste the device serial number > ")
@@ -465,12 +477,14 @@ if __name__ == '__main__':
         set_key(dotenv_path=env_file_path, key_to_set="CLIENT_SECRET", value_to_set=my_client_secret)
         set_key(dotenv_path=env_file_path, key_to_set="SERIAL", value_to_set=my_device_serial)
         set_key(dotenv_path=env_file_path, key_to_set="DIR_PATH", value_to_set=my_dir_path)
+        set_key(dotenv_path=env_file_path, key_to_set="TEAM_ID", value_to_set=my_team_id)
         ntfy.display_message(".env has been created, proceeding with uploading data")
     load_dotenv()
     my_client_id = os.getenv('CLIENT_ID')
     my_client_secret = os.getenv('CLIENT_SECRET')
     my_device_serial = os.getenv('SERIAL')
     my_dir_path = os.getenv('DIR_PATH')
+    my_team_id = os.getenv('TEAM_ID')
     ntfy_enable = os.getenv('NTFY_ENABLE')
     ntfy_topic = os.getenv('NTFY_TOPIC')
     ntfy_token = os.getenv('NTFY_TOKEN')
@@ -506,32 +520,27 @@ if __name__ == '__main__':
         'Accept': 'application/json'
     }
     ntfy.display_message("Completed Step 2")
-    # Get the current team ID associated with the client id
-    ntfy.display_message("Starting Step 3: retrieve my team id")
-    my_team_id = get_team_id(my_header, ntfy)
-    ntfy.display_message(f"\tTeam Id retrieved successfully: {my_team_id}")
-    ntfy.display_message("Compelted Step 3")
     # get the correct machine id to attach the data uplaod to
     machine_id = get_machine_id(my_team_id, my_header, my_device_serial, ntfy)
-    ntfy.display_message("Starting Step 4: Obtaining machine ID")
+    ntfy.display_message("Starting Step 3: Obtaining machine ID")
     ntfy.display_message(f"\tMachine ID retrieved successfully: {machine_id}")
-    ntfy.display_message("Completed Step 4")
+    ntfy.display_message("Completed Step 3")
     # get an import ID reservation
-    ntfy.display_message("Starting Step 5: Obtain an Import ID")
+    ntfy.display_message("Starting Step 4: Obtain an Import ID")
     my_import_id = reserve_import_id(my_team_id, my_header, ntfy)
     ntfy.display_message(f"\tImport Id reserved successfully: {my_import_id}")
-    ntfy.display_message("Completed Step 5")
+    ntfy.display_message("Completed Step 4")
     # upload files to SleepHQ API
-    ntfy.display_message("Starting Step 6: Uploading files")
+    ntfy.display_message("Starting Step 5: Uploading files")
     upload_files(my_import_id, my_header, my_file_details_list, ntfy)
-    ntfy.display_message("Completed Step 6")
+    ntfy.display_message("Completed Step 5")
     # tell SleepHQ to process the files
-    ntfy.display_message("Starting Step 7: Processing Files")
+    ntfy.display_message("Starting Step 6: Processing Files")
     process_imported_files(my_import_id, my_header, ntfy)
-    ntfy.display_message("Completed Step 7")
+    ntfy.display_message("Completed Step 6")
     time.sleep(10)
 
     # check the status for the file processing
-    ntfy.display_message("Starting Step 8: Check processing status")
+    ntfy.display_message("Starting Step 7: Check processing status")
     check_imported_files(my_import_id, my_header,ntfy)
-    ntfy.display_message("Completed Step 8.\nData Import Process is complete.")
+    ntfy.display_message("Completed Step 7.\nData Import Process is complete.")
